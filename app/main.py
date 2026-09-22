@@ -3,7 +3,8 @@ from sqlalchemy.orm import Session
 
 from . import models, schemas
 from .database import engine, get_db
-
+import json
+from .cache import redis_client
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -67,6 +68,7 @@ def create_trace(
 
     return db_trace
 # Get one specific trace
+
 @app.get(
     "/api/v1/traces/{trace_id}",
     response_model=schemas.TraceResponse
@@ -75,6 +77,15 @@ def get_trace(
     trace_id: str,
     db: Session = Depends(get_db)
 ):
+    cache_key = f"trace:{trace_id}"
+
+    # Check Redis first
+    cached_trace = redis_client.get(cache_key)
+
+    if cached_trace:
+        return json.loads(cached_trace)
+
+    # Not in Redis, so check PostgreSQL
     trace = (
         db.query(models.Trace)
         .filter(models.Trace.trace_id == trace_id)
@@ -87,8 +98,19 @@ def get_trace(
             detail=f"Trace '{trace_id}' not found"
         )
 
-    return trace
+    # Convert the trace into JSON
+    trace_data = schemas.TraceResponse.model_validate(
+        trace
+    ).model_dump(mode="json")
 
+    # Save it in Redis for 60 seconds
+    redis_client.setex(
+        cache_key,
+        60,
+        json.dumps(trace_data)
+    )
+
+    return trace
 
 # Get and filter multiple traces
 @app.get(

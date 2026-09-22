@@ -226,4 +226,38 @@ def test_invalid_parent_span(client):
         }
     )
 
-    assert response.status_code == 404              
+    assert response.status_code == 404
+
+def test_trace_is_cached(client):
+    trace_data = {
+        "trace_id": "cached-trace",
+        "service_name": "checkout-service",
+        "operation_name": "POST /checkout",
+        "start_time": "2026-09-22T16:00:00",
+        "duration_ms": 600,
+        "status": "OK"
+    }
+
+    # Create the trace
+    response = client.post(
+        "/api/v1/traces",
+        json=trace_data
+    )
+
+    assert response.status_code == 201
+
+    # Retrieve it, which should put it in Redis
+    response = client.get(
+        "/api/v1/traces/cached-trace"
+    )
+
+    assert response.status_code == 200
+
+    # Check that Redis now contains it
+    from app.cache import redis_client
+
+    cached_trace = redis_client.get(
+        "trace:cached-trace"
+    )
+
+    assert cached_trace is not None                  
