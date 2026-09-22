@@ -66,7 +66,7 @@ def create_trace(
     db.refresh(db_trace)
 
     return db_trace
-
+# Get one specific trace
 @app.get(
     "/api/v1/traces/{trace_id}",
     response_model=schemas.TraceResponse
@@ -88,6 +88,43 @@ def get_trace(
         )
 
     return trace
+
+
+# Get and filter multiple traces
+@app.get(
+    "/api/v1/traces",
+    response_model=list[schemas.TraceResponse]
+)
+def get_traces(
+    service_name: str | None = None,
+    status: str | None = None,
+    min_duration_ms: float | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db)
+):
+    query = db.query(models.Trace)
+
+    if service_name:
+        query = query.filter(
+            models.Trace.service_name == service_name
+        )
+
+    if status:
+        query = query.filter(
+            models.Trace.status == status
+        )
+
+    if min_duration_ms is not None:
+        query = query.filter(
+            models.Trace.duration_ms >= min_duration_ms
+        )
+
+    query = query.order_by(
+        models.Trace.start_time.desc()
+    )
+
+    return query.offset(offset).limit(limit).all()
 
 @app.post(
     "/api/v1/spans",
@@ -111,7 +148,7 @@ def create_span(
             detail=f"Trace '{span.trace_id}' not found"
         )
 
-    # Make sure the span ID isn't already being used
+    # Make sure the span_id is unique
     existing_span = (
         db.query(models.Span)
         .filter(models.Span.span_id == span.span_id)
@@ -123,25 +160,30 @@ def create_span(
             status_code=409,
             detail=f"Span '{span.span_id}' already exists"
         )
+
+    # Only check for a parent if this span actually has one
     if span.parent_span_id:
         parent_span = (
-        db.query(models.Span)
-        .filter(models.Span.span_id == span.parent_span_id)
-        .first()
-    )
-
-    if not parent_span:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Parent span '{span.parent_span_id}' not found"
+            db.query(models.Span)
+            .filter(
+                models.Span.span_id == span.parent_span_id
+            )
+            .first()
         )
 
-    if parent_span.trace_id != span.trace_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Parent span belongs to a different trace"
-        )
+        if not parent_span:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Parent span '{span.parent_span_id}' not found"
+            )
 
+        if parent_span.trace_id != span.trace_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Parent span belongs to a different trace"
+            )
+
+    # Create the span
     db_span = models.Span(
         span_id=span.span_id,
         trace_id=span.trace_id,
@@ -188,3 +230,32 @@ def get_trace_spans(
     )
 
     return spans
+
+@app.get(
+    "/api/v1/traces",
+    response_model=list[schemas.TraceResponse]
+)
+def get_traces(
+    service_name: str | None = None,
+    status: str | None = None,
+    min_duration_ms: float | None = None,
+    db: Session = Depends(get_db)
+):
+    query = db.query(models.Trace)
+
+    if service_name:
+        query = query.filter(
+            models.Trace.service_name == service_name
+        )
+
+    if status:
+        query = query.filter(
+            models.Trace.status == status
+        )
+
+    if min_duration_ms is not None:
+        query = query.filter(
+            models.Trace.duration_ms >= min_duration_ms
+        )
+
+    return query.all()
