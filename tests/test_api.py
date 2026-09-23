@@ -260,4 +260,31 @@ def test_trace_is_cached(client):
         "trace:cached-trace"
     )
 
-    assert cached_trace is not None                  
+    assert cached_trace is not None
+
+def test_ingest_trace_adds_to_queue(client):
+    trace_data = {
+        "trace_id": "queued-trace",
+        "service_name": "checkout-service",
+        "operation_name": "POST /checkout",
+        "start_time": "2026-09-23T01:00:00",
+        "duration_ms": 500,
+        "status": "OK"
+    }
+
+    response = client.post(
+        "/api/v1/traces/ingest",
+        json=trace_data
+    )
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "queued"
+    assert response.json()["trace_id"] == "queued-trace"
+
+    from app.cache import redis_client
+
+    queued_trace = redis_client.lpop(
+        "trace_ingestion_queue"
+    )
+
+    assert queued_trace is not None                      

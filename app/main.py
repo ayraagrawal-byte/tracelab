@@ -5,6 +5,7 @@ from . import models, schemas
 from .database import engine, get_db
 import json
 from .cache import redis_client
+from .ingestion import enqueue_trace
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -281,3 +282,19 @@ def get_traces(
         )
 
     return query.all()
+
+@app.post(
+    "/api/v1/traces/ingest",
+    status_code=202
+)
+def ingest_trace(
+    trace: schemas.TraceCreate
+):
+    trace_data = trace.model_dump(mode="json")
+
+    enqueue_trace(trace_data)
+
+    return {
+        "status": "queued",
+        "trace_id": trace.trace_id
+    }
