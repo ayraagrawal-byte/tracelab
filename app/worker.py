@@ -9,7 +9,7 @@ from .metrics import (
     trace_duration_ms,
     traces_processed_total,
 )
-
+from prometheus_client import start_http_server
 
 QUEUE_NAME = "trace_ingestion_queue"
 
@@ -53,6 +53,8 @@ def process_trace(trace_data: dict):
 
 
 def run_worker():
+    start_http_server(8001)
+
     logger.info("TraceLab worker started")
 
     while True:
