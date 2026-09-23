@@ -1,12 +1,18 @@
+import json
+
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy.orm import Session
 
 from . import models, schemas
-from .database import engine, get_db
-import json
 from .cache import redis_client
+from .database import engine, get_db
 from .ingestion import enqueue_trace
+from .metrics import traces_ingested_total
 
+
+# Create database tables
 models.Base.metadata.create_all(bind=engine)
 
 
@@ -16,6 +22,10 @@ app = FastAPI(
     version="0.1.0"
 )
 
+
+# --------------------------------------------------
+# Basic endpoints
+# --------------------------------------------------
 
 @app.get("/")
 def root():
@@ -32,7 +42,18 @@ def health():
     }
 
 
-@app.post("/api/v1/traces", response_model=schemas.TraceResponse)
+@app.get("/metrics")
+def metrics():
+    return Response(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST
+    )
+
+
+# --------------------------------------------------
+# Trace endpoints
+# --------------------------------------------------
+
 @app.post(
     "/api/v1/traces",
     response_model=schemas.TraceResponse,
@@ -68,7 +89,7 @@ def create_trace(
     db.refresh(db_trace)
 
     return db_trace
-# Get one specific trace
+
 
 @app.get(
     "/api/v1/traces/{trace_id}",
@@ -86,7 +107,7 @@ def get_trace(
     if cached_trace:
         return json.loads(cached_trace)
 
-    # Not in Redis, so check PostgreSQL
+    # If not cached, check PostgreSQL
     trace = (
         db.query(models.Trace)
         .filter(models.Trace.trace_id == trace_id)
@@ -99,12 +120,14 @@ def get_trace(
             detail=f"Trace '{trace_id}' not found"
         )
 
-    # Convert the trace into JSON
-    trace_data = schemas.TraceResponse.model_validate(
-        trace
-    ).model_dump(mode="json")
+    # Convert database object to JSON-compatible data
+    trace_data = (
+        schemas.TraceResponse
+        .model_validate(trace)
+        .model_dump(mode="json")
+    )
 
-    # Save it in Redis for 60 seconds
+    # Cache trace for 60 seconds
     redis_client.setex(
         cache_key,
         60,
@@ -113,7 +136,7 @@ def get_trace(
 
     return trace
 
-# Get and filter multiple traces
+
 @app.get(
     "/api/v1/traces",
     response_model=list[schemas.TraceResponse]
@@ -149,6 +172,34 @@ def get_traces(
 
     return query.offset(offset).limit(limit).all()
 
+
+# --------------------------------------------------
+# Async trace ingestion
+# --------------------------------------------------
+
+@app.post(
+    "/api/v1/traces/ingest",
+    status_code=202
+)
+def ingest_trace(
+    trace: schemas.TraceCreate
+):
+    trace_data = trace.model_dump(mode="json")
+
+    enqueue_trace(trace_data)
+
+    traces_ingested_total.inc()
+
+    return {
+        "status": "queued",
+        "trace_id": trace.trace_id
+    }
+
+
+# --------------------------------------------------
+# Span endpoints
+# --------------------------------------------------
+
 @app.post(
     "/api/v1/spans",
     response_model=schemas.SpanResponse,
@@ -171,7 +222,7 @@ def create_span(
             detail=f"Trace '{span.trace_id}' not found"
         )
 
-    # Make sure the span_id is unique
+    # Make sure span_id is unique
     existing_span = (
         db.query(models.Span)
         .filter(models.Span.span_id == span.span_id)
@@ -184,7 +235,7 @@ def create_span(
             detail=f"Span '{span.span_id}' already exists"
         )
 
-    # Only check for a parent if this span actually has one
+    # Validate parent span if one was supplied
     if span.parent_span_id:
         parent_span = (
             db.query(models.Span)
@@ -206,7 +257,6 @@ def create_span(
                 detail="Parent span belongs to a different trace"
             )
 
-    # Create the span
     db_span = models.Span(
         span_id=span.span_id,
         trace_id=span.trace_id,
@@ -223,6 +273,7 @@ def create_span(
     db.refresh(db_span)
 
     return db_span
+
 
 @app.get(
     "/api/v1/traces/{trace_id}/spans",
@@ -245,7 +296,6 @@ def get_trace_spans(
             detail=f"Trace '{trace_id}' not found"
         )
 
-    # Find every span belonging to this trace
     spans = (
         db.query(models.Span)
         .filter(models.Span.trace_id == trace_id)
@@ -253,48 +303,3 @@ def get_trace_spans(
     )
 
     return spans
-
-@app.get(
-    "/api/v1/traces",
-    response_model=list[schemas.TraceResponse]
-)
-def get_traces(
-    service_name: str | None = None,
-    status: str | None = None,
-    min_duration_ms: float | None = None,
-    db: Session = Depends(get_db)
-):
-    query = db.query(models.Trace)
-
-    if service_name:
-        query = query.filter(
-            models.Trace.service_name == service_name
-        )
-
-    if status:
-        query = query.filter(
-            models.Trace.status == status
-        )
-
-    if min_duration_ms is not None:
-        query = query.filter(
-            models.Trace.duration_ms >= min_duration_ms
-        )
-
-    return query.all()
-
-@app.post(
-    "/api/v1/traces/ingest",
-    status_code=202
-)
-def ingest_trace(
-    trace: schemas.TraceCreate
-):
-    trace_data = trace.model_dump(mode="json")
-
-    enqueue_trace(trace_data)
-
-    return {
-        "status": "queued",
-        "trace_id": trace.trace_id
-    }

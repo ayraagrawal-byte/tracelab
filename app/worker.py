@@ -1,12 +1,21 @@
 import json
-
+from sqlalchemy.exc import IntegrityError
 from .cache import redis_client
 from .database import SessionLocal
+from .logging_config import get_logger
 from .models import Trace
-from sqlalchemy.exc import IntegrityError
+from .metrics import (
+    duplicate_traces_total,
+    trace_duration_ms,
+    traces_processed_total,
+)
 
 
 QUEUE_NAME = "trace_ingestion_queue"
+
+logger = get_logger(__name__)
+
+
 def process_trace(trace_data: dict):
     db = SessionLocal()
 
@@ -15,23 +24,36 @@ def process_trace(trace_data: dict):
 
         db.add(db_trace)
         db.commit()
+        traces_processed_total.inc()
+        trace_duration_ms.observe(trace_data["duration_ms"])
 
-        print(
-            f"Saved trace: {trace_data['trace_id']}"
+        logger.info(
+            "Trace saved",
+            extra={
+                "trace_id": trace_data["trace_id"],
+                "service_name": trace_data["service_name"],
+                "duration_ms": trace_data["duration_ms"]
+            }
         )
 
     except IntegrityError:
         db.rollback()
+        duplicate_traces_total.inc()
 
-        print(
-            f"Skipped duplicate trace: {trace_data['trace_id']}"
+        logger.warning(
+            "Duplicate trace skipped",
+            extra={
+                "trace_id": trace_data["trace_id"],
+                "service_name": trace_data["service_name"]
+            }
         )
 
     finally:
         db.close()
 
+
 def run_worker():
-    print("TraceLab worker started...")
+    logger.info("TraceLab worker started")
 
     while True:
         item = redis_client.blpop(
