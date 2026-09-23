@@ -1,9 +1,12 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
+import os
 
 
-DATABASE_URL = "postgresql://tracelab:tracelab@localhost:5432/tracelab"
-
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://tracelab:tracelab@localhost:5432/tracelab"
+)
 
 engine = create_engine(DATABASE_URL)
 

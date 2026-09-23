@@ -1,7 +1,11 @@
+import os
+
 import redis
 
+
 redis_client = redis.Redis(
-    host="localhost",
+    host=os.getenv("REDIS_HOST", "localhost"),
     port=6379,
-    decode_responses=True
+    decode_responses=True,
+    socket_timeout=None
 )
